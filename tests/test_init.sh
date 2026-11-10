@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Unit tests for init.sh. They stub gh, git, and sudo so nothing is installed
 # and no network call is made. GitHub login is driven through a pty.
-# shellcheck disable=SC2016,SC2317,SC1091,SC2030,SC2031
+# SC2317 (0.9) and SC2329 (0.11) flag stubs that override commands after source.
+# shellcheck disable=SC2016,SC2317,SC2329,SC1091,SC2030,SC2031
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
