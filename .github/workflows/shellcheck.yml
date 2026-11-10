@@ -1,0 +1,25 @@
+name: shellcheck
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    name: shellcheck and unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get install -y shellcheck
+
+      - name: shellcheck
+        run: shellcheck init.sh tests/test_init.sh tests/container_gh.sh
+
+      - name: Unit tests
+        run: bash tests/test_init.sh
