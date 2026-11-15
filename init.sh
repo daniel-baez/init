@@ -293,7 +293,9 @@ prompt_yes() {
 }
 
 # sudo only for system package commands. Root runs them directly.
-# Password prompts and apt/dnf questions read the terminal, not the curl pipe.
+# Do not redirect stdin. sudo reads its password from /dev/tty by itself.
+# Pointing stdin at the terminal made `tee` ignore the key file and wait
+# forever after wget, which is what hung the Pi over SSH.
 run_root() {
   if [[ "$(id -u)" -eq 0 ]]; then
     if "$@"; then
@@ -305,10 +307,7 @@ run_root() {
     die "sudo is required to run: $*"
   fi
   if tty_available; then
-    # The package command must read the terminal. sudo's own password
-    # prompt already uses /dev/tty; this redirect is for apt and dnf.
-    # shellcheck disable=SC2024
-    if sudo "$@" </dev/tty; then
+    if sudo "$@"; then
       return 0
     fi
   else
@@ -318,6 +317,12 @@ run_root() {
     die "sudo needs a password and there is no terminal. Re-run init.sh from a terminal."
   fi
   die "command failed: $*"
+}
+
+# apt and dnf must not read the curl pipe. File copies go through run_root
+# with a path, not through this helper, so their contents are not discarded.
+run_pkg() {
+  run_root "$@" </dev/null
 }
 
 gh_works() {
@@ -347,8 +352,8 @@ install_gh_debian() {
   # Slim images have neither wget nor the CA bundle the key download needs.
   if ! have wget || ! dpkg -s ca-certificates >/dev/null 2>&1; then
     say "installing wget and ca-certificates"
-    run_root env DEBIAN_FRONTEND=noninteractive apt-get update
-    run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y wget ca-certificates
+    run_pkg env DEBIAN_FRONTEND=noninteractive apt-get update
+    run_pkg env DEBIAN_FRONTEND=noninteractive apt-get install -y wget ca-certificates
   fi
 
   key="$(mktemp)"
@@ -359,14 +364,15 @@ install_gh_debian() {
   fi
   printf 'deb [arch=%s signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] %s stable main\n' \
     "$arch" "$GH_APT_REPO" >"$list"
+  # install(1) copies by path. tee would read stdin, which run_root used to
+  # replace with the terminal and then block after this wget line.
   run_root mkdir -p -m 755 /etc/apt/keyrings
-  run_root tee /etc/apt/keyrings/githubcli-archive-keyring.gpg <"$key" >/dev/null
-  run_root chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg
+  run_root install -m 644 "$key" /etc/apt/keyrings/githubcli-archive-keyring.gpg
   run_root mkdir -p -m 755 /etc/apt/sources.list.d
-  run_root tee /etc/apt/sources.list.d/github-cli.list <"$list" >/dev/null
+  run_root install -m 644 "$list" /etc/apt/sources.list.d/github-cli.list
   rm -f "$key" "$list"
-  run_root env DEBIAN_FRONTEND=noninteractive apt-get update
-  run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y gh
+  run_pkg env DEBIAN_FRONTEND=noninteractive apt-get update
+  run_pkg env DEBIAN_FRONTEND=noninteractive apt-get install -y gh
 }
 
 dnf_major_is_5() {
@@ -386,16 +392,16 @@ install_gh_fedora() {
   say "installing GitHub CLI from ${GH_RPM_REPO} (dnf)"
   if [[ ! -f /etc/yum.repos.d/gh-cli.repo ]]; then
     if dnf_major_is_5; then
-      run_root dnf install -y dnf5-plugins
-      run_root dnf config-manager addrepo --from-repofile="$GH_RPM_REPO"
+      run_pkg dnf install -y dnf5-plugins
+      run_pkg dnf config-manager addrepo --from-repofile="$GH_RPM_REPO"
     else
-      run_root dnf install -y 'dnf-command(config-manager)'
-      run_root dnf config-manager --add-repo "$GH_RPM_REPO"
+      run_pkg dnf install -y 'dnf-command(config-manager)'
+      run_pkg dnf config-manager --add-repo "$GH_RPM_REPO"
     fi
   else
     say "GitHub CLI dnf repository is already configured"
   fi
-  run_root dnf install -y gh
+  run_pkg dnf install -y gh
 }
 
 load_brew_from_disk() {
@@ -592,11 +598,11 @@ ensure_git() {
   say "installing git"
   case "$OS_KIND" in
     debian)
-      run_root env DEBIAN_FRONTEND=noninteractive apt-get update
-      run_root env DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates
+      run_pkg env DEBIAN_FRONTEND=noninteractive apt-get update
+      run_pkg env DEBIAN_FRONTEND=noninteractive apt-get install -y git ca-certificates
       ;;
     fedora)
-      run_root dnf install -y git ca-certificates
+      run_pkg dnf install -y git ca-certificates
       ;;
     macos)
       if ! load_brew_from_disk; then

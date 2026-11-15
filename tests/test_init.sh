@@ -704,8 +704,9 @@ apt_case() {
       }
       run_root() {
         printf '%s\n' "$*" >>"$RUN_LOG"
-        if [[ "$1" == "tee" ]]; then
-          cat >"$CAPTURE/$(basename "$2")"
+        # install -m 644 "$src" "$dest" — copy by path, not by stdin.
+        if [[ "$1" == "install" ]]; then
+          cp -- "$4" "$CAPTURE/$(basename "$5")"
         fi
       }
       install_gh_debian
@@ -726,7 +727,12 @@ apt_case() {
       exit 1
     fi
     [[ "$(cat "$case_tmp/capture/githubcli-archive-keyring.gpg")" == "keyring-bytes" ]]
-    grep -F -q "chmod go+r /etc/apt/keyrings/githubcli-archive-keyring.gpg" "$case_tmp/run.log"
+    grep -F -q "install -m 644" "$case_tmp/run.log"
+    grep -F -q "/etc/apt/keyrings/githubcli-archive-keyring.gpg" "$case_tmp/run.log"
+    if grep -F -q "tee /etc/apt/keyrings" "$case_tmp/run.log"; then
+      printf 'FAIL apt %s still copies the keyring with tee\n' "$arch" >&2
+      exit 1
+    fi
     grep -F -q "apt-get install -y gh" "$case_tmp/run.log"
     printf 'ok  apt repo line %s\n' "$arch"
   else
@@ -745,6 +751,112 @@ apt_case() {
 apt_case arm64 0
 apt_case amd64 0
 apt_case armhf 1
+
+# Daniel's Pi hung here: `run_root tee keyring <"$key"` became
+# `sudo tee keyring </dev/tty`, so tee waited on the terminal after wget.
+# The caller's stdin must still reach the command, and it must not block.
+stdin_tmp="$(mktemp -d "$TMP/stdin.XXXXXX")"
+printf 'keyring-bytes\n' >"$stdin_tmp/key"
+set +e
+stdin_out="$(
+  timeout 5 bash -c '
+    set -euo pipefail
+    # shellcheck source=../init.sh
+    source "$1"
+    id() { printf "1000\n"; }
+    tty_available() { return 0; }
+    have() {
+      if [[ "$1" == "sudo" ]]; then
+        return 0
+      fi
+      command -v "$1" >/dev/null 2>&1
+    }
+    sudo() { cat; }
+    run_root cat <"$2"
+  ' bash "$ROOT/init.sh" "$stdin_tmp/key" 2>&1
+)"
+stdin_status=$?
+set -e
+INIT_OUT="$stdin_out"
+INIT_STATUS=$stdin_status
+if [[ "$stdin_status" -eq 124 ]]; then
+  fail "run_root stdin hung reading the terminal"
+fi
+assert_ok "run_root keeps the caller stdin"
+assert_contains "run_root delivered the key bytes" "keyring-bytes"
+
+# Same install, piped like curl | bash, with no controlling terminal.
+pipe_bin="$(mktemp -d "$TMP/pipebin.XXXXXX")"
+pipe_cap="$(mktemp -d "$TMP/pipecap.XXXXXX")"
+cat >"$pipe_bin/wget" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+dest=""
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -O) dest="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'keyring-bytes\n' >"$dest"
+EOF
+cat >"$pipe_bin/sudo" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ "${1:-}" == "-n" ]]; then
+  shift
+fi
+printf '%s\n' "$*" >>"${SUDO_LOG:?}"
+if [[ "${1:-}" == "install" ]]; then
+  cp -- "$4" "${CAPTURE:?}/$(basename "$5")"
+fi
+exit 0
+EOF
+cat >"$pipe_bin/gh" <<'EOF'
+#!/usr/bin/env bash
+exit 1
+EOF
+chmod +x "$pipe_bin/wget" "$pipe_bin/sudo" "$pipe_bin/gh"
+: >"$pipe_cap/sudo.log"
+fresh
+INIT_OS_RELEASE="$FIXTURES/debian-trixie.os-release"
+INIT_DPKG_ARCH="arm64"
+build_env
+pipe_env=()
+for pipe_arg in "${ENV_ARGS[@]}"; do
+  case "$pipe_arg" in
+    PATH=*) pipe_env+=("PATH=$pipe_bin:/usr/bin:/bin") ;;
+    *) pipe_env+=("$pipe_arg") ;;
+  esac
+done
+set +e
+pipe_out="$(
+  timeout 15 "${pipe_env[@]}" \
+    SUDO_LOG="$pipe_cap/sudo.log" \
+    CAPTURE="$pipe_cap" \
+    python3 "$ROOT/tests/run_detached.py" \
+    bash -c 'cat "$1" | bash' bash "$ROOT/init.sh" 2>&1
+)"
+pipe_status=$?
+set -e
+INIT_OUT="$pipe_out"
+INIT_STATUS=$pipe_status
+if [[ "$pipe_status" -eq 124 ]]; then
+  fail "piped init.sh hung after the keyring download"
+fi
+if [[ ! -f "$pipe_cap/githubcli-archive-keyring.gpg" ]]; then
+  fail "piped init.sh did not install the apt key by path"
+fi
+if [[ "$(cat "$pipe_cap/githubcli-archive-keyring.gpg")" != "keyring-bytes" ]]; then
+  fail "piped init.sh wrote the wrong apt key"
+fi
+if ! grep -F -q "install -m 644" "$pipe_cap/sudo.log"; then
+  fail "piped init.sh did not use install -m 644"
+fi
+if grep -F -q "tee /etc/apt" "$pipe_cap/sudo.log"; then
+  fail "piped init.sh still uses tee for apt files"
+fi
+printf 'ok  piped init.sh installs the keyring without a tty\n'
 
 # macOS as root must stop before Homebrew.
 set +e
