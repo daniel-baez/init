@@ -15,7 +15,9 @@ The script reads prompts from the terminal, so piping it from `curl` is safe. Ru
    - Debian and Raspberry Pi OS Trixie: GitHub's apt repository.
    - Fedora: GitHub's rpm repository via `dnf` (dnf5 or dnf4).
    - macOS: Homebrew, installing Homebrew first when `brew` is missing.
-3. Runs `gh auth login` with the web / device flow and HTTPS as the git protocol, then `gh auth setup-git`. Skips `gh auth login` when `gh auth status` already shows a github.com login. Checks `gh api user --jq .login`. If that is not `daniel-baez`, it stops and asks whether to log out and sign in again.
+3. Runs `gh auth login` with the web / device flow and HTTPS as the git protocol, then `gh auth setup-git`. Prompts are read from `/dev/tty`, so this still works when the script is piped from `curl`. Skips `gh auth login` when `gh auth status` already shows a github.com login. Checks `gh api user --jq .login`. If that is not `daniel-baez`, it stops and asks whether to log out and sign in again.
+
+   Over SSH (`SSH_CONNECTION` or `SSH_TTY` is set), or when the machine has no display, that login sets `GH_BROWSER` and `BROWSER` to `echo` for the `gh auth login` command only. `gh` prints the one-time code and `https://github.com/login/device`; complete the login in a browser on another computer. A local desktop session (macOS, or Linux with `DISPLAY` or `WAYLAND_DISPLAY` and no SSH) still opens a browser on this machine.
 4. Creates `$HOME/workspace` when it is missing.
 5. Clones `daniel-baez/dotfiles` into `$HOME/workspace/dotfiles` with `gh repo clone` over HTTPS, so a private repository still uses the `gh` login. When the checkout is already there, it runs `git pull --ff-only`.
 6. Runs `~/workspace/dotfiles/install.sh`. With no extra arguments that is:

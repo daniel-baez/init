@@ -53,7 +53,10 @@ write_stub gh \
   '  auth)' \
   '    case "${2:-}" in' \
   '      status) exit "${GH_STATUS_EXIT:-0}" ;;' \
-  '      login|logout|setup-git) ;;' \
+  '      login)' \
+  '        printf "env GH_BROWSER=%q BROWSER=%q\n" "${GH_BROWSER-}" "${BROWSER-}" >> "$log"' \
+  '        ;;' \
+  '      logout|setup-git) ;;' \
   '      *) printf "unexpected gh %s\n" "$*" >&2; exit 99 ;;' \
   '    esac' \
   '    ;;' \
@@ -138,6 +141,10 @@ fresh() {
   DESKTOP_SESSION=""
   WITH_GH_TOKEN=""
   WITH_GITHUB_TOKEN=""
+  DISPLAY_VALUE=""
+  WAYLAND_DISPLAY_VALUE=""
+  SSH_CONNECTION_VALUE=""
+  SSH_TTY_VALUE=""
 }
 
 build_env() {
@@ -188,6 +195,18 @@ build_env() {
   fi
   if [[ -n "$WITH_GITHUB_TOKEN" ]]; then
     ENV_ARGS+=("GITHUB_TOKEN=$WITH_GITHUB_TOKEN")
+  fi
+  if [[ -n "$DISPLAY_VALUE" ]]; then
+    ENV_ARGS+=("DISPLAY=$DISPLAY_VALUE")
+  fi
+  if [[ -n "$WAYLAND_DISPLAY_VALUE" ]]; then
+    ENV_ARGS+=("WAYLAND_DISPLAY=$WAYLAND_DISPLAY_VALUE")
+  fi
+  if [[ -n "$SSH_CONNECTION_VALUE" ]]; then
+    ENV_ARGS+=("SSH_CONNECTION=$SSH_CONNECTION_VALUE")
+  fi
+  if [[ -n "$SSH_TTY_VALUE" ]]; then
+    ENV_ARGS+=("SSH_TTY=$SSH_TTY_VALUE")
   fi
 }
 
@@ -466,7 +485,56 @@ assert_file_contains "web login" "$GH_LOG" "--web"
 assert_file_contains "https protocol flag" "$GH_LOG" "--git-protocol"
 assert_file_contains "https value" "$GH_LOG" "https"
 assert_file_contains "login subcommand" "$GH_LOG" "auth login"
+assert_file_contains "headless login prints the url via echo" "$GH_LOG" "GH_BROWSER=echo"
+assert_file_contains "headless login also sets BROWSER" "$GH_LOG" "BROWSER=echo"
+assert_contains "headless login tells you to use another computer" "another computer"
 assert_no_sudo "signed out login"
+
+fresh
+INIT_OS_RELEASE="$FIXTURES/fedora-workstation.os-release"
+GH_STATUS_EXIT=1
+DISPLAY_VALUE=":0"
+run_pty ""
+assert_ok "local display keeps the normal browser"
+assert_file_absent_needle "local display does not force echo" "$GH_LOG" "GH_BROWSER=echo"
+assert_contains "local display mentions a browser on this machine" "browser on this machine"
+
+fresh
+INIT_OS_RELEASE="$FIXTURES/fedora-workstation.os-release"
+GH_STATUS_EXIT=1
+WAYLAND_DISPLAY_VALUE="wayland-0"
+run_pty ""
+assert_ok "local wayland keeps the normal browser"
+assert_file_absent_needle "wayland does not force echo" "$GH_LOG" "GH_BROWSER=echo"
+
+fresh
+INIT_UNAME_S="Darwin"
+GH_STATUS_EXIT=1
+run_pty ""
+assert_ok "local macos keeps the normal browser"
+assert_file_absent_needle "macos does not force echo" "$GH_LOG" "GH_BROWSER=echo"
+
+fresh
+INIT_OS_RELEASE="$FIXTURES/debian-trixie.os-release"
+INIT_DPKG_ARCH="arm64"
+GH_STATUS_EXIT=1
+DISPLAY_VALUE=":0"
+SSH_CONNECTION_VALUE="203.0.113.4 22 192.168.1.20 22"
+run_pty ""
+assert_ok "ssh with a desktop does not open a local browser"
+assert_file_contains "ssh sets GH_BROWSER" "$GH_LOG" "GH_BROWSER=echo"
+assert_file_contains "ssh sets BROWSER" "$GH_LOG" "BROWSER=echo"
+assert_contains "ssh login points at another computer" "another computer"
+
+fresh
+INIT_OS_RELEASE="$FIXTURES/debian-trixie.os-release"
+INIT_DPKG_ARCH="arm64"
+GH_STATUS_EXIT=1
+DISPLAY_VALUE=":0"
+SSH_TTY_VALUE="/dev/pts/1"
+run_pty ""
+assert_ok "ssh tty with a desktop does not open a local browser"
+assert_file_contains "ssh tty sets GH_BROWSER" "$GH_LOG" "GH_BROWSER=echo"
 
 fresh
 INIT_OS_RELEASE="$FIXTURES/fedora-server.os-release"

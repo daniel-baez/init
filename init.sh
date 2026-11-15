@@ -46,6 +46,12 @@ Any other arguments replace that default and are forwarded unchanged:
   curl -fsSL https://raw.githubusercontent.com/daniel-baez/init/main/init.sh | bash -s -- --dry-run
   curl -fsSL https://raw.githubusercontent.com/daniel-baez/init/main/init.sh | bash -s -- shell git
 
+Over SSH, or when this machine has no display, GitHub login prints a
+one-time code and https://github.com/login/device instead of opening a
+browser here. Finish that page on another computer. A local desktop
+session still opens a browser on this machine. Prompts are read from
+the terminal, including when the script is piped from curl.
+
 -h, --help    Show this help and do not change the machine.
 
 Supported systems:
@@ -470,10 +476,43 @@ reject_token_env() {
   fi
 }
 
+# A Pi desktop is still a desktop, but an SSH session is being driven from
+# another computer. Skip the local browser there, and also when nothing
+# graphical is available. A local macOS or graphical Linux session keeps
+# gh's normal browser launch.
+login_without_local_browser() {
+  if [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_TTY:-}" ]]; then
+    return 0
+  fi
+  if usable_local_display; then
+    return 1
+  fi
+  return 0
+}
+
+usable_local_display() {
+  case "$(uname_s)" in
+    Darwin) return 0 ;;
+  esac
+  [[ -n "${DISPLAY:-}" || -n "${WAYLAND_DISPLAY:-}" ]]
+}
+
 gh_login() {
   require_tty "GitHub login"
   say "starting gh auth login (web / device flow, HTTPS)"
-  say "if no browser opens, finish the one-time code at https://github.com/login/device"
+  # stdin is the terminal, not the curl pipe, so "Press Enter" works.
+  if login_without_local_browser; then
+    say "this session will not open a browser on this machine"
+    say "copy the one-time code, then open https://github.com/login/device on another computer"
+    # echo writes the device URL. GH_BROWSER wins in current gh; BROWSER
+    # covers older gh that ignored GH_BROWSER during auth login.
+    # The assignment applies only to this command.
+    if ! GH_BROWSER=echo BROWSER=echo gh auth login --hostname github.com --git-protocol https --web </dev/tty; then
+      die "GitHub login did not finish. Rerun init.sh to try the browser flow again."
+    fi
+    return 0
+  fi
+  say "a browser on this machine will open; the code also works at https://github.com/login/device"
   if ! gh auth login --hostname github.com --git-protocol https --web </dev/tty; then
     die "GitHub login did not finish. Rerun init.sh to try the browser flow again."
   fi
